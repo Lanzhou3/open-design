@@ -82,6 +82,7 @@ export type DaemonAgentPayload =
   | LiveArtifactRefreshSsePayload
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean }
+  | { type: 'claude_stream_event'; eventType: string; event: Record<string, unknown> }
   | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number }
   | { type: 'fabricated_role_marker'; marker: string; messageId?: string }
   | { type: 'raw'; line: string };
