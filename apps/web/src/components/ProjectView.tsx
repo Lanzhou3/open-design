@@ -1975,7 +1975,18 @@ export function ProjectView({
         const runEventIdBuffer = createBufferedRunEventIdUpdates();
         const flushRunEventId = () => {
           if (!runEventIdBuffer.hasPending()) return;
-          updateMessageById(message.id, (prev) => runEventIdBuffer.apply(prev));
+          const decorateMessage = runEventIdBuffer.takeDecorator();
+          if (!decorateMessage) return;
+          updateMessageById(message.id, decorateMessage);
+        };
+        const withPendingRunEventId = (
+          updater: (prev: ChatMessage) => ChatMessage,
+        ): ((prev: ChatMessage) => ChatMessage) => {
+          const decorateMessage = runEventIdBuffer.takeDecorator();
+          return (prev) => {
+            const updated = updater(prev);
+            return decorateMessage ? decorateMessage(updated) : updated;
+          };
         };
         const persistNow = (options?: SaveMessageOptions) => {
           if (persistTimer) {
@@ -2040,7 +2051,7 @@ export function ProjectView({
           persistSoon,
           flushAndPersistNow: () => persistNow({ keepalive: true }),
           onContentDelta: applyContentDelta,
-          decorateMessage: runEventIdBuffer.apply,
+          takeMessageDecorator: runEventIdBuffer.takeDecorator,
         });
         reattachTextBuffersRef.current.add(textBuffer);
         const unregisterTextBuffer = () => {
@@ -2079,14 +2090,13 @@ export function ProjectView({
               }
               updateMessageById(
                 message.id,
-                (prev) =>
-                  runEventIdBuffer.apply({
-                    ...prev,
-                    content: needsFullReplay ? replayedContent : prev.content,
-                    events: needsFullReplay ? replayedEvents : prev.events,
-                    runStatus: resolveSucceededRunStatus(prev.runStatus),
-                    endedAt: prev.endedAt ?? Date.now(),
-                  }),
+                withPendingRunEventId((prev) => ({
+                  ...prev,
+                  content: needsFullReplay ? replayedContent : prev.content,
+                  events: needsFullReplay ? replayedEvents : prev.events,
+                  runStatus: resolveSucceededRunStatus(prev.runStatus),
+                  endedAt: prev.endedAt ?? Date.now(),
+                })),
                 true,
                 { telemetryFinalized: true },
               );
@@ -2141,12 +2151,11 @@ export function ProjectView({
               appendAssistantErrorEvent(message.id, err.message, errorCode);
               updateMessageById(
                 message.id,
-                (prev) =>
-                  runEventIdBuffer.apply({
-                    ...prev,
-                    runStatus: 'failed',
-                    endedAt: prev.endedAt ?? Date.now(),
-                  }),
+                withPendingRunEventId((prev) => ({
+                  ...prev,
+                  runStatus: 'failed',
+                  endedAt: prev.endedAt ?? Date.now(),
+                })),
                 true,
               );
               completedReattachRunsRef.current.add(runId);
@@ -2161,12 +2170,11 @@ export function ProjectView({
             textBuffer.flush();
             updateMessageById(
               message.id,
-              (prev) =>
-                runEventIdBuffer.apply({
-                  ...prev,
-                  runStatus,
-                  endedAt: isTerminalRunStatus(runStatus) ? prev.endedAt ?? Date.now() : prev.endedAt,
-                }),
+              withPendingRunEventId((prev) => ({
+                ...prev,
+                runStatus,
+                endedAt: isTerminalRunStatus(runStatus) ? prev.endedAt ?? Date.now() : prev.endedAt,
+              })),
               true,
             );
             if (runStatus === 'canceled') {
@@ -2191,12 +2199,11 @@ export function ProjectView({
               appendAssistantErrorEvent(message.id, msg);
               updateMessageById(
                 message.id,
-                (prev) =>
-                  runEventIdBuffer.apply({
-                    ...prev,
-                    runStatus: 'failed',
-                    endedAt: prev.endedAt ?? Date.now(),
-                  }),
+                withPendingRunEventId((prev) => ({
+                  ...prev,
+                  runStatus: 'failed',
+                  endedAt: prev.endedAt ?? Date.now(),
+                })),
                 true,
                 { telemetryFinalized: true },
               );
@@ -2469,7 +2476,18 @@ export function ProjectView({
       const runEventIdBuffer = createBufferedRunEventIdUpdates();
       const flushRunEventId = () => {
         if (!runEventIdBuffer.hasPending()) return;
-        updateAssistant((prev) => runEventIdBuffer.apply(prev));
+        const decorateMessage = runEventIdBuffer.takeDecorator();
+        if (!decorateMessage) return;
+        updateAssistant(decorateMessage);
+      };
+      const withPendingRunEventId = (
+        updater: (prev: ChatMessage) => ChatMessage,
+      ): ((prev: ChatMessage) => ChatMessage) => {
+        const decorateMessage = runEventIdBuffer.takeDecorator();
+        return (prev) => {
+          const updated = updater(prev);
+          return decorateMessage ? decorateMessage(updated) : updated;
+        };
       };
       let persistTimer: ReturnType<typeof setTimeout> | null = null;
       const persistAssistantSoon = () => {
@@ -2489,9 +2507,10 @@ export function ProjectView({
       };
       const pushEvent = (ev: AgentEvent) => {
         textBuffer.flush();
-        updateAssistant((prev) =>
-          runEventIdBuffer.apply({ ...prev, events: [...(prev.events ?? []), ev] }),
-        );
+        updateAssistant(withPendingRunEventId((prev) => ({
+          ...prev,
+          events: [...(prev.events ?? []), ev],
+        })));
         if (ev.kind === 'live_artifact') {
           setLiveArtifactEvents((prev) => appendLiveArtifactEventItem(prev, ev));
           void refreshLiveArtifacts().then(() => {
@@ -2600,7 +2619,7 @@ export function ProjectView({
         persistSoon: persistAssistantSoon,
         flushAndPersistNow: persistAssistantNowKeepalive,
         onContentDelta: applyContentDelta,
-        decorateMessage: runEventIdBuffer.apply,
+        takeMessageDecorator: runEventIdBuffer.takeDecorator,
       });
       sendTextBufferRef.current = textBuffer;
 
@@ -2643,17 +2662,16 @@ export function ProjectView({
             const diagnostic = t('assistant.emptyResponseMessage');
             updateMessageById(
               assistantId,
-              (prev) =>
-                runEventIdBuffer.apply({
-                  ...prev,
-                  endedAt,
-                  runStatus: 'failed',
+              withPendingRunEventId((prev) => ({
+                ...prev,
+                endedAt,
+                runStatus: 'failed',
                   events: [
                     ...(prev.events ?? []),
                     { kind: 'status', label: 'empty_response', detail: config.model },
                     { kind: 'text', text: diagnostic },
                   ],
-                }),
+                })),
               true,
               { telemetryFinalized: true },
             );
@@ -2669,14 +2687,14 @@ export function ProjectView({
           }
           const endedAt = Date.now();
           let finalRunStatus: ChatMessage['runStatus'] = 'succeeded';
-          updateAssistant((prev) => {
+          updateAssistant(withPendingRunEventId((prev) => {
             finalRunStatus = resolveSucceededRunStatus(prev.runStatus);
-            return runEventIdBuffer.apply({
+            return {
               ...prev,
               endedAt,
               runStatus: finalRunStatus,
-            });
-          });
+            };
+          }));
           if (runCommentAttachments.length > 0) {
             void patchAttachedStatuses(runCommentAttachments, 'needs_review');
           }
@@ -2716,13 +2734,13 @@ export function ProjectView({
           cancelSendTextBuffer();
           setError(err.message);
           appendAssistantErrorEvent(assistantId, err.message, errorCode);
-          updateAssistant((prev) => ({
-            ...runEventIdBuffer.apply(prev),
+          updateAssistant(withPendingRunEventId((prev) => ({
+            ...prev,
             endedAt,
             runStatus: config.mode === 'api' || prev.runId || isActiveRunStatus(prev.runStatus)
               ? 'failed'
               : prev.runStatus,
-          }));
+          })));
           if (runCommentAttachments.length > 0) {
             void patchAttachedStatuses(runCommentAttachments, 'failed');
           }
@@ -2811,12 +2829,11 @@ export function ProjectView({
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
             updateMessageById(
               assistantId,
-              (prev) =>
-                runEventIdBuffer.apply({
-                  ...prev,
-                  runStatus,
-                  endedAt: endedAt === undefined ? prev.endedAt : prev.endedAt ?? endedAt,
-                }),
+              withPendingRunEventId((prev) => ({
+                ...prev,
+                runStatus,
+                endedAt: endedAt === undefined ? prev.endedAt : prev.endedAt ?? endedAt,
+              })),
               true,
               runStatus === 'canceled' ? { telemetryFinalized: true } : undefined,
             );
@@ -5040,14 +5057,14 @@ function createBufferedRunEventIdUpdates() {
 
   const hasPending = () => pendingLastRunEventId !== null;
 
-  const apply = (message: ChatMessage): ChatMessage => {
-    if (pendingLastRunEventId === null) return message;
+  const takeDecorator = (): ((message: ChatMessage) => ChatMessage) | null => {
+    if (pendingLastRunEventId === null) return null;
     const lastRunEventId = pendingLastRunEventId;
     pendingLastRunEventId = null;
-    return { ...message, lastRunEventId };
+    return (message: ChatMessage) => ({ ...message, lastRunEventId });
   };
 
-  return { note, hasPending, apply };
+  return { note, hasPending, takeDecorator };
 }
 
 function createBufferedTextUpdates({
@@ -5055,7 +5072,7 @@ function createBufferedTextUpdates({
   persistSoon,
   flushAndPersistNow,
   onContentDelta,
-  decorateMessage,
+  takeMessageDecorator,
 }: {
   updateMessage: (updater: (prev: ChatMessage) => ChatMessage) => void;
   persistSoon: () => void;
@@ -5064,7 +5081,7 @@ function createBufferedTextUpdates({
   // last buffered chunk isn't lost when the user reloads mid-stream.
   flushAndPersistNow?: () => void;
   onContentDelta?: (delta: string) => void;
-  decorateMessage?: (message: ChatMessage) => ChatMessage;
+  takeMessageDecorator?: () => ((message: ChatMessage) => ChatMessage) | null;
 }) {
   let pendingContentDelta = '';
   let pendingTextEventDelta = '';
@@ -5099,6 +5116,7 @@ function createBufferedTextUpdates({
     needsFlush = false;
     const contentDelta = pendingContentDelta;
     const textEventDelta = pendingTextEventDelta;
+    const decorateMessage = takeMessageDecorator?.() ?? null;
     pendingContentDelta = '';
     pendingTextEventDelta = '';
     try {
@@ -5156,7 +5174,11 @@ function createBufferedTextUpdates({
       return;
     }
     flush();
-    updateMessage((prev) => ({ ...prev, events: [...(prev.events ?? []), ev] }));
+    const decorateMessage = takeMessageDecorator?.() ?? null;
+    updateMessage((prev) => {
+      const updated = { ...prev, events: [...(prev.events ?? []), ev] };
+      return decorateMessage ? decorateMessage(updated) : updated;
+    });
     persistSoon();
   };
 

@@ -11101,6 +11101,29 @@ export async function startServer({
         ? `\n\n${promptImagePaths.map((p) => `@${p}`).join(' ')}`
         : '',
     ].join('');
+    // Plain-streaming adapters that own a "continue most recent
+    // conversation" CLI flag (today: only `agy -c`) read this signal
+    // to resume upstream session state on follow-up turns. The query
+    // matches any persisted assistant message in the same conversation
+    // EXCEPT the placeholder row this run just inserted (it's still
+    // `pending` and has no body — counting it as prior would always
+    // force `-c` on the very first turn). Adapters that don't consume
+    // this field ignore it. Prompt transforms receive the same context,
+    // so this must be initialized before `agentPrompt` is computed.
+    const hasPriorAssistantTurn = run.conversationId
+      ? Boolean(
+          db
+            .prepare(
+              `SELECT 1 FROM messages
+               WHERE conversation_id = ?
+                 AND role = 'assistant'
+                 AND COALESCE(content, '') <> ''
+                 AND id <> COALESCE(?, '')
+               LIMIT 1`,
+            )
+            .get(run.conversationId, run.assistantMessageId ?? ''),
+        )
+      : false;
     // Per-agent model + reasoning the user picked in the model menu.
     // Trust the value when it matches the most recent /api/agents listing
     // (live or fallback). Otherwise allow it through if it passes a
@@ -11393,29 +11416,6 @@ export async function startServer({
         return design.runs.finish(run, 'failed', 1, null);
       }
     }
-
-    // Plain-streaming adapters that own a "continue most recent
-    // conversation" CLI flag (today: only `agy -c`) read this signal
-    // to resume upstream session state on follow-up turns. The query
-    // matches any persisted assistant message in the same conversation
-    // EXCEPT the placeholder row this run just inserted (it's still
-    // `pending` and has no body — counting it as prior would always
-    // force `-c` on the very first turn). Adapters that don't consume
-    // this field ignore it.
-    const hasPriorAssistantTurn = run.conversationId
-      ? Boolean(
-          db
-            .prepare(
-              `SELECT 1 FROM messages
-               WHERE conversation_id = ?
-                 AND role = 'assistant'
-                 AND COALESCE(content, '') <> ''
-                 AND id <> COALESCE(?, '')
-               LIMIT 1`,
-            )
-            .get(run.conversationId, run.assistantMessageId ?? ''),
-        )
-      : false;
 
     // Antigravity's `agy` is silent on stdout/stderr in print mode for
     // both auth-missing and quota-exhausted failures — the actual
