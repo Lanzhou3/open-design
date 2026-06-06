@@ -14,6 +14,7 @@ import type { Locale } from '../../src/i18n/types';
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 const CONNECTOR = { id: 'c1', name: 'Notion', status: 'connected' } as never;
@@ -100,5 +101,47 @@ describe('ComposerPlusMenu design toolbox flyout', () => {
     const flyout = screen.getByText('Toolbox content').closest('.plus-menu__flyout');
     expect(flyout).toBeTruthy();
     expect(flyout?.classList.contains('plus-menu__flyout--toolbox')).toBe(true);
+  });
+
+  it('caps the toolbox flyout height when it would cross the viewport top edge', () => {
+    vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(300);
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getRect(
+      this: HTMLElement,
+    ) {
+      if (this instanceof HTMLElement && this.classList.contains('plus-menu__flyout--toolbox')) {
+        return {
+          x: 20,
+          y: -80,
+          top: -80,
+          right: 380,
+          bottom: 260,
+          left: 20,
+          width: 360,
+          height: 340,
+          toJSON: () => undefined,
+        };
+      }
+      return originalRect.call(this);
+    });
+
+    renderMenu({
+      connectors: [],
+      plugins: [],
+      mcpServers: [],
+      renderToolbox: () => (
+        <div className="composer-design-toolbox-menu">
+          <span>Toolbox content</span>
+        </div>
+      ),
+      toolboxLabel: 'Design toolbox',
+    });
+    fireEvent.click(screen.getByTestId('plus-trigger'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Design toolbox/i }));
+
+    const flyout = screen.getByText('Toolbox content').closest<HTMLElement>('.plus-menu__flyout');
+    expect(flyout).toBeTruthy();
+    expect(flyout?.style.getPropertyValue('--plus-menu-toolbox-max-height')).toBe('244px');
+    expect(flyout?.style.getPropertyValue('--plus-menu-toolbox-content-max-height')).toBe('232px');
   });
 });

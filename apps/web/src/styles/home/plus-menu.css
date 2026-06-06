@@ -107,7 +107,9 @@
   bottom: -5px;
   width: min(360px, calc(100vw - 32px));
   max-width: min(360px, calc(100vw - 32px));
-  max-height: calc(100dvh - 32px);
+  max-height: var(--plus-menu-toolbox-max-height, calc(100dvh - 32px));
+  overflow: hidden;
+  transform: translateY(var(--plus-menu-toolbox-shift-y, 0px));
 }
 /* Invisible bridge so the cursor can cross the gap into the flyout without
    triggering the row's mouseleave. */
@@ -168,7 +170,7 @@
   position: static;
   width: 100%;
   min-width: 0;
-  max-height: min(430px, calc(100dvh - 32px));
+  max-height: min(430px, var(--plus-menu-toolbox-content-max-height, calc(100dvh - 44px)));
   border: 0;
   border-radius: 0;
   box-shadow: none;

@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import type {
   ConnectorDetail,
   InstalledPluginRecord,
@@ -59,6 +66,15 @@ function mcpMatches(server: McpServerConfig, needle: string): boolean {
   if (!needle) return true;
   return `${server.label ?? ''} ${server.id}`.toLowerCase().includes(needle);
 }
+
+const TOOLBOX_FLYOUT_VIEWPORT_MARGIN = 16;
+const TOOLBOX_FLYOUT_CHROME_HEIGHT = 12;
+
+type ToolboxFlyoutStyle = CSSProperties & {
+  '--plus-menu-toolbox-content-max-height'?: string;
+  '--plus-menu-toolbox-max-height'?: string;
+  '--plus-menu-toolbox-shift-y'?: string;
+};
 
 /**
  * The composer "+" menu shared between the home hero and the project chat
@@ -372,6 +388,68 @@ function PlusSubmenuRow({
   children: ReactNode;
   flyoutVariant?: 'toolbox';
 }) {
+  const flyoutRef = useRef<HTMLDivElement | null>(null);
+  const [toolboxFlyoutStyle, setToolboxFlyoutStyle] = useState<ToolboxFlyoutStyle>();
+
+  useLayoutEffect(() => {
+    if (!open || flyoutVariant !== 'toolbox') {
+      setToolboxFlyoutStyle(undefined);
+      return;
+    }
+    const flyout = flyoutRef.current;
+    if (!flyout || typeof window === 'undefined') return;
+
+    let frame: number | null = null;
+    const updateMetrics = () => {
+      frame = null;
+      const rect = flyout.getBoundingClientRect();
+      const viewportTop = window.visualViewport?.offsetTop ?? 0;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const minTop = viewportTop + TOOLBOX_FLYOUT_VIEWPORT_MARGIN;
+      const maxBottom = viewportTop + viewportHeight - TOOLBOX_FLYOUT_VIEWPORT_MARGIN;
+      const shiftY = Math.min(0, maxBottom - rect.bottom);
+      const clampedBottom = rect.bottom + shiftY;
+      const maxHeight = Math.min(430, Math.max(0, Math.floor(clampedBottom - minTop)));
+      const contentMaxHeight = Math.max(0, maxHeight - TOOLBOX_FLYOUT_CHROME_HEIGHT);
+      const next: ToolboxFlyoutStyle = {
+        '--plus-menu-toolbox-content-max-height': `${contentMaxHeight}px`,
+        '--plus-menu-toolbox-max-height': `${maxHeight}px`,
+        '--plus-menu-toolbox-shift-y': `${shiftY}px`,
+      };
+      setToolboxFlyoutStyle((prev) => {
+        if (
+          prev?.['--plus-menu-toolbox-content-max-height']
+            === next['--plus-menu-toolbox-content-max-height']
+          && prev?.['--plus-menu-toolbox-max-height'] === next['--plus-menu-toolbox-max-height']
+          && prev?.['--plus-menu-toolbox-shift-y'] === next['--plus-menu-toolbox-shift-y']
+        ) {
+          return prev;
+        }
+        return next;
+      });
+    };
+    const scheduleUpdate = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(updateMetrics);
+    };
+
+    updateMetrics();
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(scheduleUpdate)
+        : null;
+    resizeObserver?.observe(flyout);
+    window.addEventListener('resize', scheduleUpdate);
+    window.visualViewport?.addEventListener('resize', scheduleUpdate);
+
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', scheduleUpdate);
+      window.visualViewport?.removeEventListener('resize', scheduleUpdate);
+    };
+  }, [flyoutVariant, open]);
+
   return (
     <div
       className="plus-menu__submenu-row"
@@ -393,7 +471,9 @@ function PlusSubmenuRow({
       {open ? (
         <div
           className={`plus-menu__flyout${flyoutVariant ? ` plus-menu__flyout--${flyoutVariant}` : ''}`}
+          ref={flyoutRef}
           role="menu"
+          style={flyoutVariant === 'toolbox' ? toolboxFlyoutStyle : undefined}
         >
           {children}
         </div>
