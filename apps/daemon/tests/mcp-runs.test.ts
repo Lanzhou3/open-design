@@ -50,6 +50,7 @@ describe('public MCP discovery + generation tools', () => {
       inputs: { tone: 'bold' },
       agent: 'claude',
       model: 'claude-opus-4-7',
+      reasoning: 'ultracode',
     });
 
     const postBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
@@ -60,6 +61,7 @@ describe('public MCP discovery + generation tools', () => {
       pluginInputs: { tone: 'bold' },
       agentId: 'claude',
       model: 'claude-opus-4-7',
+      reasoning: 'ultracode',
     });
     expect(JSON.parse(firstText(result))).toMatchObject({ runId: 'run-42' });
   });
