@@ -23,6 +23,7 @@ export type PromptTelemetrySectionKind =
   | 'skillPrompt'
   | 'designSystemPrompt'
   | 'pluginStagePrompt'
+  | 'agentPrompt'
   | 'cwdHint'
   | 'linkedDirsHint'
   | 'attachments'
@@ -100,6 +101,7 @@ const REDACTED_CONTENT_KINDS = new Set<PromptTelemetrySectionKind>([
   'skillPrompt',
   'designSystemPrompt',
   'pluginStagePrompt',
+  'agentPrompt',
 ]);
 
 const SECTION_PRIORITY = new Map<PromptTelemetrySectionKind, number>([
@@ -114,6 +116,7 @@ const SECTION_PRIORITY = new Map<PromptTelemetrySectionKind, number>([
   ['runContextPrompt', 7],
   ['echoGuard', 8],
   ['userRequest', 9],
+  ['agentPrompt', 10],
 ]);
 
 const FILE_LOCAL_PATH =
