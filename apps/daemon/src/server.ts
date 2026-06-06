@@ -2799,6 +2799,13 @@ function daemonAgentPayloadToPersistedAgentEvent(data) {
       isError: Boolean(data.isError),
     };
   }
+  if (type === 'claude_stream_event') {
+    return {
+      kind: 'status',
+      label: 'workflow',
+      detail: summarizeClaudeWorkflowEvent(data),
+    };
+  }
   if (type === 'usage') {
     const usage = data.usage && typeof data.usage === 'object' ? data.usage : {};
     return {
@@ -2818,6 +2825,31 @@ function daemonAgentPayloadToPersistedAgentEvent(data) {
   }
   if (type === 'raw' && typeof data.line === 'string') return { kind: 'raw', line: data.line };
   return null;
+}
+
+function summarizeClaudeWorkflowEvent(data) {
+  const event = data?.event && typeof data.event === 'object' ? data.event : {};
+  const summary =
+    typeof event.summary === 'string'
+      ? event.summary
+      : typeof event.status === 'string'
+        ? event.status
+        : typeof event.name === 'string'
+          ? event.name
+          : typeof event.phase === 'string'
+            ? event.phase
+            : typeof data?.eventType === 'string'
+              ? data.eventType
+              : 'workflow event';
+  const id =
+    typeof event.run_id === 'string'
+      ? event.run_id
+      : typeof event.workflow_id === 'string'
+        ? event.workflow_id
+        : typeof event.task_id === 'string'
+          ? event.task_id
+          : '';
+  return id ? `${summary} (${id})` : summary;
 }
 
 function normalizePersistedToolInput(input) {
@@ -11476,8 +11508,56 @@ export async function startServer({
         ? `\n\n${promptImagePaths.map((p) => `@${p}`).join(' ')}`
         : '',
     ].join('');
+    // Per-agent model + reasoning the user picked in the model menu.
+    // Trust the value when it matches the most recent /api/agents listing
+    // (live or fallback). Otherwise allow it through if it passes a
+    // permissive sanitizer — that's the path for user-typed custom model
+    // ids the CLI's listing didn't surface yet.
+    let safeModel = resolveModelForAgent(
+      def,
+      typeof model === 'string'
+        ? isKnownModel(def, model)
+          ? model
+          : sanitizeCustomModel(model)
+        : null,
+    );
+    const safeReasoning =
+      typeof reasoning === 'string' && Array.isArray(def.reasoningOptions)
+        ? (def.reasoningOptions.find((r) => r.id === reasoning)?.id ?? null)
+        : null;
+    const agentOptions = { model: safeModel, reasoning: safeReasoning };
+
+    // Plain-streaming adapters that own a "continue most recent
+    // conversation" CLI flag (today: only `agy -c`) read this signal
+    // to resume upstream session state on follow-up turns. The query
+    // matches any persisted assistant message in the same conversation
+    // EXCEPT the placeholder row this run just inserted (it's still
+    // `pending` and has no body — counting it as prior would always
+    // force `-c` on the very first turn). Adapters that don't consume
+    // this field ignore it. Prompt transforms receive the same context,
+    // so this must be initialized before `agentPrompt` is computed.
+    const hasPriorAssistantTurn = run.conversationId
+      ? Boolean(
+          db
+            .prepare(
+              `SELECT 1 FROM messages
+               WHERE conversation_id = ?
+                 AND role = 'assistant'
+                 AND COALESCE(content, '') <> ''
+                 AND id <> COALESCE(?, '')
+               LIMIT 1`,
+            )
+            .get(run.conversationId, run.assistantMessageId ?? ''),
+        )
+      : false;
+    const agentPrompt = typeof def.transformPrompt === 'function'
+      ? def.transformPrompt(composed, agentOptions, {
+          cwd: effectiveCwd,
+          hasPriorAssistantTurn,
+        })
+      : composed;
     run.promptTelemetry = buildPromptStackTelemetry({
-      composedPrompt: composed,
+      composedPrompt: agentPrompt,
       sections: [
         { kind: 'formOverride', content: formOverride },
         // Phase 1 explicitly needs redactedContent for these aggregate prompts:
@@ -11498,6 +11578,10 @@ export async function startServer({
         {
           kind: 'pluginStagePrompt',
           content: promptTelemetryParts?.pluginStagePrompt,
+        },
+        {
+          kind: 'agentPrompt',
+          content: agentPrompt === composed ? '' : agentPrompt,
         },
         { kind: 'cwdHint', content: cwdHint, metadata: cwd ? [cwd] : [] },
         {
@@ -11526,24 +11610,6 @@ export async function startServer({
       ...(run.analyticsTelemetry ?? {}),
       promptBuildEndAt: Date.now(),
     };
-    // Per-agent model + reasoning the user picked in the model menu.
-    // Trust the value when it matches the most recent /api/agents listing
-    // (live or fallback). Otherwise allow it through if it passes a
-    // permissive sanitizer — that's the path for user-typed custom model
-    // ids the CLI's listing didn't surface yet.
-    let safeModel = resolveModelForAgent(
-      def,
-      typeof model === 'string'
-        ? isKnownModel(def, model)
-          ? model
-          : sanitizeCustomModel(model)
-        : null,
-    );
-    const safeReasoning =
-      typeof reasoning === 'string' && Array.isArray(def.reasoningOptions)
-        ? (def.reasoningOptions.find((r) => r.id === reasoning)?.id ?? null)
-        : null;
-    const agentOptions = { model: safeModel, reasoning: safeReasoning };
     // Accumulates the agent's visible text this run so the close handler can
     // tell whether the turn ended on a clarifying question form. The
     // `od-plugin-authoring` plugin's turn-1 flow is to emit a
@@ -11844,7 +11910,7 @@ export async function startServer({
     // independently of whether the adapter binary happens to be on PATH
     // in the CI environment, and the user gets the actionable
     // adapter-named error even if /api/agents hadn't refreshed yet.
-    const promptBudgetError = checkPromptArgvBudget(def, composed);
+    const promptBudgetError = checkPromptArgvBudget(def, agentPrompt);
     if (promptBudgetError) {
       design.runs.emit(
         run,
@@ -11984,29 +12050,6 @@ export async function startServer({
       }
     }
 
-    // Plain-streaming adapters that own a "continue most recent
-    // conversation" CLI flag (today: only `agy -c`) read this signal
-    // to resume upstream session state on follow-up turns. The query
-    // matches any persisted assistant message in the same conversation
-    // EXCEPT the placeholder row this run just inserted (it's still
-    // `pending` and has no body — counting it as prior would always
-    // force `-c` on the very first turn). Adapters that don't consume
-    // this field ignore it.
-    const hasPriorAssistantTurn = run.conversationId
-      ? Boolean(
-          db
-            .prepare(
-              `SELECT 1 FROM messages
-               WHERE conversation_id = ?
-                 AND role = 'assistant'
-                 AND COALESCE(content, '') <> ''
-                 AND id <> COALESCE(?, '')
-               LIMIT 1`,
-            )
-            .get(run.conversationId, run.assistantMessageId ?? ''),
-        )
-      : false;
-
     // Antigravity's `agy` is silent on stdout/stderr in print mode for
     // both auth-missing and quota-exhausted failures — the actual
     // RESOURCE_EXHAUSTED / "not logged in" payload only surfaces in
@@ -12042,7 +12085,7 @@ export async function startServer({
     }
 
     const args = def.buildArgs(
-      composed,
+      agentPrompt,
       safeImages,
       extraAllowedDirs,
       agentOptions,
@@ -13000,7 +13043,7 @@ export async function startServer({
       trackingSubstantiveOutput = true;
       acpSession = attachPiRpcSession({
         child,
-        prompt: composed,
+        prompt: agentPrompt,
         cwd: effectiveCwd,
         model: safeModel,
         parentSession: agentResumeCtx.isResuming && agentResumeCtx.resumeSessionId
@@ -13037,7 +13080,7 @@ export async function startServer({
       const acpStageTimeoutMs = resolveAcpStageTimeoutMs();
       acpSession = attachAcpSession({
         child,
-        prompt: composed,
+        prompt: agentPrompt,
         cwd: effectiveCwd,
         model: safeModel,
         imagePaths: def.supportsImagePaths ? amrStagedImages : [],
@@ -13508,7 +13551,7 @@ export async function startServer({
           type: 'user',
           message: {
             role: 'user',
-            content: [{ type: 'text', text: composed }],
+            content: [{ type: 'text', text: agentPrompt }],
           },
         });
         try {
@@ -13521,7 +13564,7 @@ export async function startServer({
         }
         run.stdinOpen = true;
       } else {
-        child.stdin.end(composed, 'utf8');
+        child.stdin.end(agentPrompt, 'utf8');
       }
     }
   };

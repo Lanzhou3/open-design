@@ -246,6 +246,7 @@ function stripFns(
   // metadata and shouldn't bleed into the API response either.
   const {
     buildArgs,
+    transformPrompt,
     listModels,
     fetchModels,
     fallbackModels,

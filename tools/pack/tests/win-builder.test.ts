@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { NtExecutable, NtExecutableResource, Resource } from "resedit";
 import { describe, expect, it } from "vitest";
 
-import { materializeCachedUnpackedForInstaller } from "../src/win/builder.js";
+import { isWinCodeSignSymlinkPrivilegeError, materializeCachedUnpackedForInstaller } from "../src/win/builder.js";
 import type { WinPaths } from "../src/win/types.js";
 import { readWinExecutableVersionSnapshot } from "../src/win/version-resource.js";
 
@@ -115,6 +115,33 @@ describe("materializeCachedUnpackedForInstaller", () => {
     } finally {
       await rm(root, { force: true, recursive: true });
     }
+  });
+});
+
+describe("isWinCodeSignSymlinkPrivilegeError", () => {
+  it("matches electron-builder winCodeSign extraction failures caused by blocked Windows symlinks", () => {
+    expect(
+      isWinCodeSignSymlinkPrivilegeError({
+        stdout: [
+          "workingDir=<electron-builder-cache>\\winCodeSign",
+          "ERROR: Cannot create symbolic link : user lacks privilege : <electron-builder-cache>\\winCodeSign\\093751595\\darwin\\10.12\\lib\\libcrypto.dylib",
+        ].join("\n"),
+      }),
+    ).toBe(true);
+  });
+
+  it("matches the same failure when child process output is only in the error message", () => {
+    expect(
+      isWinCodeSignSymlinkPrivilegeError(
+        new Error(
+          "winCodeSign extraction failed: ERROR: Cannot create symbolic link : user lacks privilege",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated electron-builder failures", () => {
+    expect(isWinCodeSignSymlinkPrivilegeError({ stdout: "cannot execute rcedit" })).toBe(false);
   });
 });
 
