@@ -907,6 +907,11 @@
   contain: layout style paint;
   transform: translateZ(0);
 }
+.chat-composer-fixed-layer:has(.plus-menu__popup) {
+  z-index: 1600;
+  contain: layout style;
+  transform: none;
+}
 .chat-composer-fixed-layer .composer {
   pointer-events: auto;
 }

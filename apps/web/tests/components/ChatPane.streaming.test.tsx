@@ -200,6 +200,15 @@ describe('ChatPane streaming state', () => {
     expect(css).toContain('z-index: 80;');
   });
 
+  it('lets fixed-layer composer menus escape canvas stacking and paint clipping', () => {
+    const css = readExpandedIndexCss();
+
+    expect(css).toContain('.chat-composer-fixed-layer:has(.plus-menu__popup)');
+    expect(css).toContain('z-index: 1600;');
+    expect(css).toContain('contain: layout style;');
+    expect(css).toContain('transform: none;');
+  });
+
   it('exposes retry only for the last failed assistant when the pane is idle', () => {
     const failed: ChatMessage = {
       id: 'assistant-1',
