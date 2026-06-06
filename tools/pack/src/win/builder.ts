@@ -48,6 +48,16 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+export function isWinCodeSignSymlinkPrivilegeError(error: unknown): boolean {
+  const output = [
+    (error as { stdout?: unknown } | undefined)?.stdout,
+    (error as { stderr?: unknown } | undefined)?.stderr,
+  ]
+    .filter((entry): entry is string => typeof entry === "string")
+    .join("\n");
+  return output.includes("winCodeSign") && output.includes("Cannot create symbolic link");
+}
+
 async function assertWebStandaloneOutput(config: ToolPackConfig): Promise<void> {
   const webRoot = join(config.workspaceRoot, "apps", "web");
   const standaloneSourceRoot = join(webRoot, ".next", "standalone");
@@ -99,7 +109,7 @@ async function runElectronBuilderRaw(config: ToolPackConfig, paths: WinPaths, pr
   const webStandaloneHookConfigPath = config.webOutputMode === "standalone"
     ? await writeWebStandaloneHookConfig(config, paths)
     : null;
-  const builderConfig = {
+  let builderConfig = {
     appId: "io.open-design.desktop",
     afterPack: webStandaloneHookConfigPath == null ? undefined : winResources.webStandaloneAfterPackHook,
     asar: ELECTRON_BUILDER_ASAR,
@@ -151,6 +161,7 @@ async function runElectronBuilderRaw(config: ToolPackConfig, paths: WinPaths, pr
     win: {
       artifactName: `${PRODUCT_NAME}-${namespaceToken}.\${ext}`,
       icon: paths.winIconPath,
+      signAndEditExecutable: undefined as boolean | undefined,
       target: resolveElectronBuilderWinTargets(config.to).map((target) => ({ arch: ["x64"], target })),
     },
   };
@@ -158,7 +169,10 @@ async function runElectronBuilderRaw(config: ToolPackConfig, paths: WinPaths, pr
   await removeTree(paths.appBuilderOutputRoot);
   await mkdir(dirname(paths.appBuilderConfigPath), { recursive: true });
   await writeNsisInclude(config, paths);
-  await writeFile(paths.appBuilderConfigPath, `${JSON.stringify(builderConfig, null, 2)}\n`, "utf8");
+  const writeBuilderConfig = async () => {
+    await writeFile(paths.appBuilderConfigPath, `${JSON.stringify(builderConfig, null, 2)}\n`, "utf8");
+  };
+  await writeBuilderConfig();
   const build = async () => {
     await execFileAsync(process.execPath, [
       config.electronBuilderCliPath,
@@ -183,6 +197,19 @@ async function runElectronBuilderRaw(config: ToolPackConfig, paths: WinPaths, pr
     await build();
   } catch (error) {
     const output = `${(error as { stdout?: unknown }).stdout ?? ""}\n${(error as { stderr?: unknown }).stderr ?? ""}`;
+    if (isWinCodeSignSymlinkPrivilegeError(error)) {
+      builderConfig = {
+        ...builderConfig,
+        win: {
+          ...builderConfig.win,
+          signAndEditExecutable: false,
+        },
+      };
+      await removeTree(paths.appBuilderOutputRoot);
+      await writeBuilderConfig();
+      await build();
+      return;
+    }
     if (output.includes("Persian.nlf") && await ensureNsisPersianLanguageAlias(config)) {
       await build();
       return;
