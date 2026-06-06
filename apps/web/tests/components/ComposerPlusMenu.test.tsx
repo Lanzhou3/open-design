@@ -80,3 +80,25 @@ describe('ComposerPlusMenu pick-row caret protection', () => {
     expect(screen.getByText('Linear')).toBeTruthy();
   });
 });
+
+describe('ComposerPlusMenu design toolbox flyout', () => {
+  it('marks the toolbox flyout so CSS can keep it above and inside the viewport', () => {
+    renderMenu({
+      connectors: [],
+      plugins: [],
+      mcpServers: [],
+      renderToolbox: () => (
+        <div className="composer-design-toolbox-menu">
+          <span>Toolbox content</span>
+        </div>
+      ),
+      toolboxLabel: 'Design toolbox',
+    });
+    fireEvent.click(screen.getByTestId('plus-trigger'));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Design toolbox/i }));
+
+    const flyout = screen.getByText('Toolbox content').closest('.plus-menu__flyout');
+    expect(flyout).toBeTruthy();
+    expect(flyout?.classList.contains('plus-menu__flyout--toolbox')).toBe(true);
+  });
+});

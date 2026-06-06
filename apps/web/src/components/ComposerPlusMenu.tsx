@@ -344,6 +344,7 @@ export function ComposerPlusMenu({
               open={submenu === 'toolbox'}
               onOpen={() => setSubmenu('toolbox')}
               onClose={() => setSubmenu(null)}
+              flyoutVariant="toolbox"
             >
               {renderToolbox(close)}
             </PlusSubmenuRow>
@@ -361,6 +362,7 @@ function PlusSubmenuRow({
   onOpen,
   onClose,
   children,
+  flyoutVariant,
 }: {
   label: string;
   icon: IconName;
@@ -368,6 +370,7 @@ function PlusSubmenuRow({
   onOpen: () => void;
   onClose: () => void;
   children: ReactNode;
+  flyoutVariant?: 'toolbox';
 }) {
   return (
     <div
@@ -388,7 +391,10 @@ function PlusSubmenuRow({
         <Icon name="chevron-right" size={13} className="plus-menu__chevron" />
       </button>
       {open ? (
-        <div className="plus-menu__flyout" role="menu">
+        <div
+          className={`plus-menu__flyout${flyoutVariant ? ` plus-menu__flyout--${flyoutVariant}` : ''}`}
+          role="menu"
+        >
           {children}
         </div>
       ) : null}

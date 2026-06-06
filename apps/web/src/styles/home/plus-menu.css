@@ -102,6 +102,13 @@
     0 1px 2px rgba(0, 0, 0, 0.04),
     0 10px 28px -10px rgba(0, 0, 0, 0.18);
 }
+.plus-menu__flyout--toolbox {
+  top: auto;
+  bottom: -5px;
+  width: min(360px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+}
 /* Invisible bridge so the cursor can cross the gap into the flyout without
    triggering the row's mouseleave. */
 .plus-menu__flyout::before {
@@ -159,8 +166,9 @@
    let the panel's own styling (composer-design-toolbox-*) drive the rest. */
 .plus-menu__flyout .composer-design-toolbox-menu {
   position: static;
-  width: auto;
-  min-width: 320px;
+  width: 100%;
+  min-width: 0;
+  max-height: min(430px, calc(100dvh - 32px));
   border: 0;
   border-radius: 0;
   box-shadow: none;
