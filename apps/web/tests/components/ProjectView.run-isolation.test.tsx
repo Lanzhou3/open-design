@@ -113,6 +113,7 @@ vi.mock('../../src/components/AvatarMenu', () => ({
 }));
 
 vi.mock('../../src/components/FileWorkspace', () => ({
+  DESIGN_SYSTEM_TAB: '__design_system__',
   FileWorkspace: ({
     streaming,
     messages,
@@ -1353,6 +1354,99 @@ describe('ProjectView conversation run isolation', () => {
     );
   });
 
+  it('replaces a raw prompt-head project name with the first prompt summary', async () => {
+    const promptNamedProject: Project = {
+      ...project,
+      name: 'hello from b',
+      metadata: { kind: 'prototype', nameSource: 'prompt' },
+    };
+    const emptyConversation: Conversation = {
+      id: 'conv-empty',
+      projectId: promptNamedProject.id,
+      title: null,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    listConversations.mockResolvedValue([emptyConversation]);
+    listMessages.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+
+    renderProjectView(config, promptNamedProject);
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-empty'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() =>
+      expect(patchConversation).toHaveBeenCalledWith(
+        promptNamedProject.id,
+        emptyConversation.id,
+        { title: 'Hello From B' },
+      ),
+    );
+    await waitFor(() =>
+      expect(patchProject).toHaveBeenCalledWith(
+        promptNamedProject.id,
+        expect.objectContaining({
+          name: 'Hello From B',
+          metadata: expect.objectContaining({ nameSource: 'prompt' }),
+        }),
+      ),
+    );
+  });
+
+  it('replaces the first-turn fallback title with an agent-generated title', async () => {
+    const promptNamedProject: Project = {
+      ...project,
+      name: 'hello from b',
+      metadata: { kind: 'prototype', nameSource: 'prompt' },
+    };
+    const emptyConversation: Conversation = {
+      id: 'conv-empty',
+      projectId: promptNamedProject.id,
+      title: null,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    listConversations.mockResolvedValue([emptyConversation]);
+    listMessages.mockResolvedValue([]);
+    fetchChatRunStatus.mockResolvedValue(null);
+    streamViaDaemon.mockImplementation(async (input: {
+      handlers: { onAgentEvent: (event: { kind: 'conversation_title'; title: string }) => void };
+    }) => {
+      input.handlers.onAgentEvent({ kind: 'conversation_title', title: 'Agent Title' });
+    });
+
+    renderProjectView(config, promptNamedProject);
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-empty'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      titleGeneration: { enabled: true },
+    }));
+    await waitFor(() =>
+      expect(patchConversation).toHaveBeenCalledWith(
+        promptNamedProject.id,
+        emptyConversation.id,
+        { title: 'Agent Title' },
+      ),
+    );
+    await waitFor(() =>
+      expect(patchProject).toHaveBeenCalledWith(
+        promptNamedProject.id,
+        expect.objectContaining({
+          name: 'Agent Title',
+          metadata: expect.objectContaining({ nameSource: 'agent' }),
+        }),
+      ),
+    );
+  });
+
   it('forwards staged skill and external context selections into the next daemon run payload', async () => {
     renderProjectView();
 
@@ -1381,25 +1475,20 @@ describe('ProjectView conversation run isolation', () => {
     }));
   });
 
-  it('notifies when an API-mode chat completes without a daemon run status transition', async () => {
+  it('notifies when a BYOK OpenCode chat completes without a daemon run status transition', async () => {
     listMessages.mockResolvedValue([]);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
-    streamMessage.mockImplementation(
-      async (
-        _config: unknown,
-        _systemPrompt: unknown,
-        _history: unknown,
-        _signal: unknown,
-        handlers: { onDelta: (delta: string) => void; onDone: () => void },
-      ) => {
-        handlers.onDelta('api response');
-        handlers.onDone();
-      },
-    );
+    streamViaDaemon.mockImplementation(async (options: {
+      handlers: { onDelta: (delta: string) => void; onDone: () => void };
+    }) => {
+      options.handlers.onDelta('api response');
+      options.handlers.onDone();
+    });
 
     renderProjectView({
       ...config,
       mode: 'api',
+      apiProtocol: 'openai',
       apiKey: 'test-key',
       model: 'api-model',
     });
@@ -1409,8 +1498,102 @@ describe('ProjectView conversation run isolation', () => {
 
     fireEvent.click(screen.getByTestId('send-message'));
 
-    await waitFor(() => expect(streamMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'byok-opencode',
+      byokProvider: expect.objectContaining({ protocol: 'openai', apiKey: 'test-key' }),
+      model: 'api-model',
+    }));
     await waitFor(() => expect(playSound).toHaveBeenCalledWith('success-sound'));
+  });
+
+  it('routes keyless local Ollama BYOK chats through OpenCode with provider metadata', async () => {
+    listMessages.mockResolvedValue([]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
+    renderProjectView({
+      ...config,
+      mode: 'api',
+      apiProtocol: 'ollama',
+      apiKey: '',
+      baseUrl: 'http://localhost:11434',
+      model: 'llama3.2',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'byok-opencode',
+      byokProvider: {
+        protocol: 'ollama',
+        apiKey: '',
+        baseUrl: 'http://localhost:11434',
+        requiresApiKey: false,
+        apiVersion: '',
+      },
+      model: 'llama3.2',
+    }));
+  });
+
+  it('routes the keyless vLLM BYOK preset through OpenCode with provider metadata', async () => {
+    listMessages.mockResolvedValue([]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
+    renderProjectView({
+      ...config,
+      mode: 'api',
+      apiProtocol: 'openai',
+      apiKey: '',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      apiProviderBaseUrl: 'http://127.0.0.1:8000/v1',
+      model: 'model',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
+    expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'byok-opencode',
+      byokProvider: {
+        protocol: 'openai',
+        apiKey: '',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        requiresApiKey: false,
+        apiVersion: '',
+      },
+      model: 'model',
+    }));
+  });
+
+  it('keeps Bedrock BYOK chats on the client-side unsupported path', async () => {
+    listMessages.mockResolvedValue([]);
+
+    renderProjectView({
+      ...config,
+      mode: 'api',
+      apiProtocol: 'bedrock',
+      apiKey: '',
+      model: 'anthropic.claude-3-5-sonnet-20240620-v1:0',
+    });
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-error').textContent).toBe(
+        'AWS Bedrock BYOK chat requires AWS credential signing and is not supported by the current API-key proxy.',
+      ),
+    );
+    expect(streamViaDaemon).not.toHaveBeenCalled();
   });
 
   it('converges a daemon chat back to idle when the first AMR run fails authentication', async () => {
@@ -1807,6 +1990,7 @@ function renderProjectView(
   renderProject: Project = project,
   renderAgents: AgentInfo[] = [
     { id: 'agent-1', name: 'OpenCode', bin: 'opencode', available: true, models: [] },
+    { id: 'byok-opencode', name: 'BYOK OpenCode', bin: 'opencode', available: true, models: [] },
   ],
   handlers: {
     onModeChange?: (mode: 'daemon' | 'api') => void;

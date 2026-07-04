@@ -1,4 +1,5 @@
 import type { ProjectFile } from './files';
+import type { RunResultPackageResponse, RunWorkspace } from './workspaces.js';
 import type {
   PreviewCommentAttachment,
   PreviewCommentMember,
@@ -12,10 +13,35 @@ import type { RunContextSelection } from './context.js';
 import type { MediaExecutionPolicy } from './media.js';
 import type { AppliedPluginSnapshot } from '../plugins/apply.js';
 import type { McpAuthMode, McpServerConfig, McpTransport } from './mcp';
+import type { TrackingRuntimeType } from '../analytics/public-params.js';
 
 export type ChatRole = 'user' | 'assistant';
-export type ChatSessionMode = 'design' | 'chat';
+export type ChatSessionMode = 'design' | 'chat' | 'plan';
 export type ChatCommentSelectionKind = PreviewCommentSelectionKind | 'visual';
+export type ByokChatProtocol =
+  | 'anthropic'
+  | 'openai'
+  | 'azure'
+  | 'google'
+  | 'ollama'
+  | 'senseaudio'
+  | 'aihubmix';
+
+export interface ByokChatProviderConfig {
+  protocol: ByokChatProtocol;
+  apiKey: string;
+  baseUrl?: string;
+  apiVersion?: string;
+  /** Explicit run-scoped provider policy for presets that do not require bearer credentials. */
+  requiresApiKey?: boolean;
+}
+
+export interface ByokMediaDefaults {
+  imageModel?: string;
+  videoModel?: string;
+  speechModel?: string;
+  speechVoice?: string;
+}
 
 export interface ChatRequest {
   agentId: string;
@@ -40,6 +66,17 @@ export interface ChatRequest {
   commentAttachments?: ChatCommentAttachment[];
   model?: string | null;
   reasoning?: string | null;
+  /**
+   * Run-scoped BYOK provider credentials for the daemon-backed OpenCode
+   * adapter. The daemon must not persist this object; it is translated into
+   * child env + OPENCODE_CONFIG_CONTENT for the current run only.
+   */
+  byokProvider?: ByokChatProviderConfig;
+  /**
+   * Run-scoped BYOK media defaults selected in the chat UI. The daemon uses
+   * these to guide OpenCode-backed `od media generate` calls for this run only.
+   */
+  byokMediaDefaults?: ByokMediaDefaults;
   /** UI locale selected by the client, used by prompt composition for user-visible generated UI. */
   locale?: string;
   research?: ResearchOptions;
@@ -51,6 +88,14 @@ export interface ChatRequest {
    * local providers.
    */
   mediaExecution?: MediaExecutionPolicy;
+  /**
+   * Ask the selected run agent to emit a short title for this first turn.
+   * The daemon strips the title marker from visible assistant text and falls
+   * back to client-side naming when the marker is absent or malformed.
+   */
+  titleGeneration?: {
+    enabled?: boolean;
+  };
   /**
    * Run-scoped tool bundle supplied by an external orchestrator.
    * These servers are made available only to the spawned agent for this run
@@ -77,7 +122,20 @@ export type ChatAnalyticsEntryFrom =
   // A turn started by the "Continue the run" affordance on a resumable failed
   // run. Lets run_created / run_finished isolate resume-continuations so the
   // recovery mechanism's usage and success rate are measurable.
-  | 'resume_continue';
+  | 'resume_continue'
+  // A turn started from a preview annotation: `comment` is the comment/board
+  // pin flow (chat-new-line tool), `mark` is the Mark draw-overlay flow
+  // (mark-pen tool). Both edit an existing artifact, so isolating them lets the
+  // dashboard separate annotation-driven runs from plain composer sends.
+  | 'comment'
+  | 'mark'
+  // A turn whose composer was seeded by a guided Next-step action (the
+  // next-step card prefills a skill/prompt; the run fires on the following
+  // Send). Best-effort: the pending tag is consumed by the next send.
+  | 'next_step'
+  // A turn that submits answers to an inline `<question-form>` clarification
+  // (the question still being clarified, not a fresh create/edit intent).
+  | 'question_answer';
 
 export type ChatAnalyticsLengthBucket =
   | '0'
@@ -89,6 +147,7 @@ export type ChatAnalyticsLengthBucket =
 export type ChatAnalyticsDesignSystemOrigin =
   | 'onboarding'
   | 'manual_create'
+  | 'source_url'
   | 'github_repo'
   | 'local_code'
   | 'fig'
@@ -123,6 +182,27 @@ export interface ChatAnalyticsHints {
     | 'design_system'
     | 'other';
   designSystemRunContext?: ChatAnalyticsDesignSystemRunContext;
+  // Session-dimension run context, computed client-side and stamped onto
+  // run_created / run_finished so a session's run sequence is analysable
+  // ("did this session reach an artifact, and on which turn?").
+  // `turnIndex` is 0-based within the browser analytics session;
+  // `isFirstRun` === (turnIndex === 0). `hasExistingArtifact` is true when the
+  // project already had a generated artifact when this run was started
+  // (project-scoped) — the run is an edit rather than a first creation.
+  turnIndex?: number;
+  isFirstRun?: boolean;
+  hasExistingArtifact?: boolean;
+  // Active execution runtime for THIS run, computed client-side at launch
+  // (the only layer that can tell BYOK from amr_cloud). The daemon stamps it
+  // onto run_created / run_finished, overriding its own BYOK-blind
+  // derivation. Omitted means "let the daemon keep its derived value".
+  runtimeType?: TrackingRuntimeType;
+  // Analytics-only marker that THIS run is the AI-optimize ("enrich") pass on a
+  // programmatically-extracted design system. The web AI-optimize path sets it;
+  // the daemon uses it to emit `design_system_enrich_result` and to stamp the
+  // `ai_refined` enrichment metadata on success. It carries no execution
+  // semantics — omitting it just means the run is not an enrichment pass.
+  dsEnrichment?: boolean;
 }
 
 export interface RunScopedMcpServerConfig extends Omit<McpServerConfig, 'enabled'> {
@@ -281,6 +361,14 @@ export interface ChatRunStatusResponse {
   conversationId: string | null;
   assistantMessageId: string | null;
   agentId: string | null;
+  /** Design system whose prompt context was actually injected for this run. */
+  designSystemId?: string | null;
+  /** Selected design system before usability/body checks; useful for diagnostics. */
+  designSystemRequestedId?: string | null;
+  /** Source that supplied the effective design-system selection. */
+  designSystemSelectionSource?: 'request' | 'plugin' | 'project' | 'app-default' | 'none' | null;
+  /** sha256 digest of the injected DESIGN.md/tokens/component context. */
+  designSystemDigest?: string | null;
   appliedPluginSnapshotId?: string | null;
   pluginId?: string | null;
   status: ChatRunStatus;
@@ -310,9 +398,19 @@ export interface ChatRunStatusResponse {
   mediaExecution?: MediaExecutionPolicy;
   /** Run-scoped tool bundle summary with secrets and command details redacted. */
   toolBundle?: RunScopedToolBundleSummary;
+  /** Prompt cache diagnostics for resume-capable runtime sessions. */
+  promptCache?: {
+    stablePromptHash: string;
+    hit: boolean;
+    missReason: 'new-session' | 'missing-stored-hash' | 'stable-prompt-changed' | null;
+  };
   /** Browser Use availability for runs that requested in-app browser automation. */
   browserUse?: BrowserUseRunState;
+  /** Effective storage/provenance for the workspace used by this run. */
+  workspace?: RunWorkspace;
 }
+
+export type ChatRunResultPackageResponse = RunResultPackageResponse;
 
 export interface ChatRunListResponse {
   runs: ChatRunStatusResponse[];
@@ -368,6 +466,7 @@ export type PersistedAgentEvent =
   // decide error-specific affordances such as the hosted-AMR nudge.
   | { kind: 'status'; label: string; detail?: string; code?: string }
   | { kind: 'text'; text: string }
+  | { kind: 'conversation_title'; title: string }
   | { kind: 'thinking'; text: string }
   | {
       kind: 'live_artifact';
@@ -424,6 +523,7 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
   commentAttachments?: ChatCommentAttachment[];
   producedFiles?: ProjectFile[];
+  traceObjectFiles?: ProjectFile[];
   // Diff baseline so reattach can rebuild producedFiles after reload.
   preTurnFileNames?: string[];
   feedback?: ChatMessageFeedback;

@@ -210,6 +210,32 @@ describe('streamViaDaemon', () => {
     });
   });
 
+  it('requests title generation when enabled', async () => {
+    const handlers = createDaemonHandlers();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs') return jsonResponse({ runId: 'run-1' });
+      if (url === '/api/runs/run-1/events') {
+        return sseResponse('event: end\ndata: {"code":0,"status":"succeeded"}\n\n');
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await streamViaDaemon({
+      agentId: 'mock',
+      history: [{ id: '1', role: 'user', content: 'name this conversation' }],
+      systemPrompt: '',
+      signal: new AbortController().signal,
+      handlers,
+      titleGeneration: { enabled: true },
+    });
+
+    const [, createRunInit] = fetchMock.mock.calls[0] as unknown as [RequestInfo | URL, RequestInit];
+    const body = JSON.parse(String(createRunInit.body));
+    expect(body.titleGeneration).toEqual({ enabled: true });
+  });
+
   it('sends the applied plugin snapshot id to the daemon', async () => {
     const handlers = createDaemonHandlers();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -290,6 +316,26 @@ describe('streamViaDaemon', () => {
     expect(transcript).toContain('first gemini request');
     expect(transcript).toContain('gemini response');
     expect(transcript).toContain('second gemini request');
+  });
+
+  it('keeps legacy API-mode assistant context when routing through BYOK OpenCode', () => {
+    const transcript = buildDaemonTranscript(
+      [
+        { id: '1', role: 'user', content: 'draft the registration flow' },
+        {
+          id: '2',
+          role: 'assistant',
+          content: 'openai api response with design decisions',
+          agentId: 'openai-api',
+        },
+        { id: '3', role: 'user', content: 'make the second step clearer' },
+      ],
+      'byok-opencode',
+    );
+
+    expect(transcript).toContain('draft the registration flow');
+    expect(transcript).toContain('openai api response with design decisions');
+    expect(transcript).toContain('make the second step clearer');
   });
 
   it('extracts only the latest user prompt for telemetry', () => {
@@ -937,7 +983,7 @@ describe('streamViaDaemon', () => {
       }),
     );
     const message = (handlers.onError.mock.calls[0]?.[0] as Error).message;
-    expect(message).toContain('AMR Link URL or model route');
+    expect(message).toContain('Open Design link URL or model route');
     expect(message).not.toContain('json-rpc id 4');
     expect(message).not.toContain('https://example.invalid');
     expect(handlers.onDone).not.toHaveBeenCalled();
@@ -1295,7 +1341,7 @@ describe('streamViaDaemon', () => {
 
     expect(handlers.onError).toHaveBeenCalledWith(expect.any(Error));
     const message = (handlers.onError.mock.calls[0]?.[0] as Error).message;
-    expect(message).toContain('AMR/OpenCode started, but the run did not complete');
+    expect(message).toContain('Open Design started, but the run did not complete');
     expect(message).not.toContain('sqlite-migration');
     expect(message).not.toContain('OPENCODE_SERVER_PASSWORD');
     expect(message).not.toContain('opencode server listening');
@@ -1888,6 +1934,31 @@ describe('streamViaDaemon', () => {
       kind: 'status',
       label: 'researching',
       detail: 'tavily · shallow',
+    });
+  });
+
+  it('forwards agent-generated conversation title events', async () => {
+    const handlers = createDaemonHandlers();
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ runId: 'run-1' }))
+      .mockResolvedValueOnce(
+        sseResponse(
+          'event: agent\ndata: {"type":"conversation_title","title":"Infographic Habits"}\n\n' +
+            'event: end\ndata: {"code":0,"status":"succeeded"}\n\n',
+        ),
+      ));
+
+    await streamViaDaemon({
+      agentId: 'mock',
+      history: [{ id: '1', role: 'user', content: 'hello' }],
+      systemPrompt: '',
+      signal: new AbortController().signal,
+      handlers,
+    });
+
+    expect(handlers.onAgentEvent).toHaveBeenCalledWith({
+      kind: 'conversation_title',
+      title: 'Infographic Habits',
     });
   });
 

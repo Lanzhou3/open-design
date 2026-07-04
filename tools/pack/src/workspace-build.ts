@@ -8,6 +8,7 @@ import { hashPackageSourcePath } from "./package-source-hash.js";
 import { readRuntimeAppVersion, versionFamilyForAppVersion } from "./versions.js";
 
 const WORKSPACE_BUILD_PACKAGES = [
+  { directory: "packages/release", name: "@open-design/release" },
   { directory: "packages/components", name: "@open-design/components" },
   { directory: "packages/contracts", name: "@open-design/contracts" },
   { directory: "packages/registry-protocol", name: "@open-design/registry-protocol" },
@@ -27,6 +28,7 @@ const WORKSPACE_BUILD_PACKAGES = [
 ] as const;
 
 const BUILD_COMMANDS = [
+  { args: ["--filter", "@open-design/release", "build"] },
   { args: ["--filter", "@open-design/components", "build"] },
   { args: ["--filter", "@open-design/contracts", "build"] },
   { args: ["--filter", "@open-design/registry-protocol", "build"] },
@@ -98,7 +100,7 @@ async function createWorkspaceBuildCacheKey(config: ToolPackConfig): Promise<str
     packageManager: await readPackageManager(config.workspaceRoot),
     platform: config.platform,
     pnpmLock: await hashPath(join(config.workspaceRoot, "pnpm-lock.yaml")),
-    schemaVersion: 7,
+    schemaVersion: 8,
     webOutputMode: config.webOutputMode,
   });
 }
@@ -111,6 +113,8 @@ function workspaceBuildOutputFiles(config: ToolPackConfig): string[] {
   return [
     "packages/components/dist/index.mjs",
     "packages/components/dist/index.d.ts",
+    "packages/release/dist/index.mjs",
+    "packages/release/dist/index.d.ts",
     "packages/contracts/dist/index.mjs",
     "packages/contracts/dist/index.d.ts",
     "packages/registry-protocol/dist/index.mjs",
@@ -149,6 +153,7 @@ function workspaceBuildOutputFiles(config: ToolPackConfig): string[] {
 function workspaceBuildArtifacts(config: ToolPackConfig): WorkspaceBuildArtifact[] {
   const artifacts = [
     "packages/components/dist",
+    "packages/release/dist",
     "packages/contracts/dist",
     "packages/registry-protocol/dist",
     "packages/sidecar-proto/dist",
@@ -230,14 +235,17 @@ function shouldCopyWhenSymlinkFails(error: unknown): boolean {
   return code === "EPERM" || code === "EACCES";
 }
 
-async function createHoistedPeerDependency(
-  target: string,
-  linkPath: string,
-  relativeTarget: string,
-  createLink: CreateSymlink,
-): Promise<void> {
+async function symlinkDirectoryForWorkspaceBuild(target: string, linkPath: string): Promise<void> {
+  if (process.platform === "win32") {
+    await symlink(target, linkPath, "junction");
+    return;
+  }
+  await symlink(relative(dirname(linkPath), target), linkPath, "dir");
+}
+
+async function createHoistedPeerDependency(target: string, linkPath: string, createLink: CreateSymlink): Promise<void> {
   try {
-    await createLink(relativeTarget, linkPath);
+    await createLink(target, linkPath);
   } catch (error) {
     if (!shouldCopyWhenSymlinkFails(error)) throw error;
     await cp(target, linkPath, { dereference: true, recursive: true });
@@ -248,7 +256,7 @@ export async function hoistStandaloneNextPeerDeps(
   standaloneRoot: string,
   options: { createLink?: CreateSymlink } = {},
 ): Promise<void> {
-  const createLink = options.createLink ?? symlink;
+  const createLink = options.createLink ?? symlinkDirectoryForWorkspaceBuild;
   const appNodeModules = join(standaloneRoot, WEB_STANDALONE_APP_NODE_MODULES);
   const pnpmRoot = join(standaloneRoot, "node_modules", ".pnpm");
   let pnpmEntries: string[];
@@ -273,12 +281,11 @@ export async function hoistStandaloneNextPeerDeps(
     if (!match) continue;
     const target = join(pnpmRoot, match, "node_modules", pkg);
     if (!(await pathExists(target))) continue;
-    const relativeTarget = relative(dirname(linkPath), target);
     // Idempotent re-run: drop any pre-existing derived entry before
     // recreating it. This covers both stale symlinks and copied fallback
     // directories from Windows hosts that cannot create symlinks.
     if (existing) await rm(linkPath, { force: true, recursive: true }).catch(() => undefined);
-    await createHoistedPeerDependency(target, linkPath, relativeTarget, createLink);
+    await createHoistedPeerDependency(target, linkPath, createLink);
   }
 }
 
